@@ -29,6 +29,7 @@ def debugException(process, dbgevent):
             if dbgevent.u.Exception.ExceptionRecord.ExceptionAddress == i.address:
                 print(f"Breakpoint {count} at {hex(i.address)} triggered ")
                 process.Breaked = True
+                    
                 process.MemWrite(
                     process.BreakPoints[count].address,
                     process.BreakPoints[count].orgbyte,

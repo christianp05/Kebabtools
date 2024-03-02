@@ -2,7 +2,7 @@ import ctypes
 from ctypes import wintypes
 import pefile
 from .customwinclasses import *
-
+import time
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 EXCEPTION_BREAKPOINT = 0x80000003
 INFINITE = 0xFFFFFFFF
@@ -16,7 +16,7 @@ class Breakpoint:
         self.disabled = False
 
     def disable(self):
-        self.process.MemWrite(self.address, self.orgbyte)
+        self.process.MemWrite(self.address, self.orgbyte.to_bytes())
         self.disabled = True
 
     def enable(self):
@@ -48,6 +48,7 @@ def GetModules(handle):
         raise ctypes.WinError(ctypes.get_last_error())
 
     for module in OutArray:
+        
         if module == None:
             break
         newModHandle = wintypes.HMODULE(
@@ -71,8 +72,9 @@ def GetModules(handle):
         
 
         name = fullPath.split("\\")[-1] #just want dll name not fullpath
-
         peObject = pefile.PE(fullPath)
+        print("LOADING NEW FILE: ",name)
+
         #check if the module is a dll. 0x2000 = IMAGE_FILE_DLL
         functions = {}
         if peObject.FILE_HEADER.Characteristics & 0x2000 == 0:
@@ -85,7 +87,6 @@ def GetModules(handle):
         retModule = Module(name, fullPath, modHandle,functions)
         retdict.update({retModule.name:retModule})
     return retdict
-
 
 def WaitForDebugEvent():
 

@@ -1,8 +1,14 @@
+import sys
+sys.dont_write_bytecode = True
+
 
 import ctypes
 from ctypes import wintypes
 import pefile
 import psutil
+from .util import *
+from .heaputil import *
+
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
@@ -33,9 +39,10 @@ class Process:
         if self.arch == "x64":
             from .x64 import dbghandler
             from .x64 import dbgutil
-
+            from .x64 import winutil
             self.dbghandler = dbghandler
             self.dbgutil = dbgutil
+            self.winutil = winutil
         elif self.arch == "x86":
             from .x86 import dbghandler
             from .x86 import dbgutil
@@ -50,6 +57,7 @@ class Process:
         self.ThreadHandle = retvalues[0].hThread
         self.Pid = retvalues[0].dwProcessId
         self.Modules = self.dbgutil.GetModules(self.Handle)
+        self.PEBAddress = self.winutil.GetPEBAdr(self.Handle)
         self.BreakPoints = []
         self.BaseAdress = self.Modules[self.Exename].handle.value
         self.Breaked = False
@@ -84,11 +92,18 @@ class Process:
         # Return a correct array in case we read less than the asked amount of bytes
         CorrectlySizedArray = (ctypes.c_char * lpNumberOfBytesRead.value)()
         ctypes.memmove(CorrectlySizedArray, lpBuffer, lpNumberOfBytesRead.value)
-        return CorrectlySizedArray
+        return CorrectlySizedArray.raw
 
     def MemWrite(self, address, buffer):
 
         lpBaseAddress = ctypes.c_ulonglong(address)
+
+        #if type equals int then its a single byte write
+        if type(buffer) == int:
+            result = kernel32.WriteProcessMemory(self.Handle, lpBaseAddress, buffer.to_bytes(1,"little"), 1, None)
+            if result == 0:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return None
 
         lpBuffer = (ctypes.c_char * len(buffer))()
         ctypes.memmove(lpBuffer, buffer, len(buffer))
@@ -125,6 +140,93 @@ class Process:
         currentRegs.eflags = currentRegs.eflags ^ 0x0100
         self.SetReg("eflags", currentRegs.eflags)
     
+    def GetHeapInfo(self):
+
+        # cool decomp https://github.com/wmliang/windowsland/blob/master/rtlpfreeheap.cpp
+        # https://github.com/0x00ach/stuff/blob/master/heap_walk_test.c
+
+        print(colorGreen("-----HEAP INFO-----"))
+        heapCount = unpack(self.MemRead(self.PEBAddress + 0xe8, 4))
+        print("Heap count: ",heapCount)
+        heapList = unpack(self.MemRead(self.PEBAddress + 0xf0, 8))
+        heaps = [] #array with all _HEAP structs of different heaps
+        print(colorGreen("-----HEAPS-----"))
+        for i in range(heapCount):
+            currentHeap = unpack(self.MemRead(heapList + 8*i,8))
+            print(f"Heap {i}")
+            flags = unpack(self.MemRead(currentHeap+0x70,4))
+            for flag in checkHeapSetFlags(flags):
+                print(f"{colorYellow(flag)} | ",end="")
+            print("")
+            print("_HEAP base: ",colorBlue(hex(currentHeap)))
+            print("Heap signature: ",hex(unpack(self.MemRead(currentHeap+0x98,4))))
+            XORMASK = unpack(self.MemRead(currentHeap+0x88,8)) #XOR mask that chunk headers get xored with
+            print("Heap xor mask: ", colorRed(hex(XORMASK)))
+            print("\n")
+            lastValidEntry = unpack(self.MemRead(currentHeap+0x48,8))
+            print("Heap lastValidEntry: ",colorBlue(hex(lastValidEntry)))
+
+            heaps.append(Heap(XORMASK,currentHeap,lastValidEntry))
+        
+        
+        for x,heap in enumerate(heaps):
+            print(colorGreen(f"-----WALKING HEAP {x}-----"))
+
+            """
+            FLINK #0x0
+            BLINK #0x8
+            POINTER TO SEGMENTSTRUCT 0x10
+            """
+            print(colorGreen("----FINDING SEGMENTS----"))
+            segments = []
+
+            firstLink = unpack(self.MemRead(heap.base +0x120,8)) # _HEAP.SegmentList.Flink
+            firstSegmentPtr = unpack(self.MemRead(firstLink+0x10,8))
+            
+            currentLink = firstLink
+            SegmentPointer = firstSegmentPtr
+            while 1:
+                SegmentPointer = currentLink-0x18
+                segments.append(SegmentPointer)
+                currentLink = unpack(self.MemRead(currentLink,8))
+                if currentLink == heap.base +0x120:
+                    break
+            for x,segment in enumerate(segments):
+                print(f"Segment {x}: ",colorBlue(hex(segment)))
+
+            for x,segmentStruct in enumerate(segments):
+
+
+                lastvalidentry = unpack(self.MemRead(segmentStruct+0x48,8))#_HEAP_SEGMENT->LastValidEntry
+                firstEntry = unpack(self.MemRead(segmentStruct+0x40,8)) #_HEAP_SEGMENT->FirstEntry
+
+
+                print(colorGreen(f"-----WALKING ENTRIES IN SEGMENT {x}-----"))
+                print(f"First entry: ",colorBlue(hex(firstEntry)))
+                print("Last valid: ",colorBlue(hex(lastValidEntry)))
+                currentEntry = firstEntry
+                while 1:
+                    chunkHeader = (unpack(self.MemRead(currentEntry+8,8)) ^ heap.XORMASK).to_bytes(8,"little")
+                    size = parseChunk(chunkHeader,currentEntry)
+                    currentEntry = currentEntry +size
+
+                    if size == 0x40:
+                        print("LastChunk")
+                        while(isUncommitted(self,currentEntry,segmentStruct)):
+                            currentEntry = (currentEntry +0x1000) & ~0xfff
+                                    
+
+                            
+                    if currentEntry >= lastvalidentry:
+                        break
+                currentLink = unpack(self.MemRead(currentLink,8))
+
+            
+
+
+
+
+
 class Attach:
     def __init__(self, PID):
         self.path = GetProcessPath(PID)
@@ -226,3 +328,5 @@ class Attach:
         self.Continue()
         currentRegs.eflags = currentRegs.eflags ^ 0x0100
         self.SetReg("eflags", currentRegs.eflags)
+
+

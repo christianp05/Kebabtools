@@ -144,7 +144,15 @@ class PROCESS_INFORMATION(Structure):
         ("dwProcessId", DWORD),
         ("dwThreadId", DWORD),
     ]
-
+class PROCESS_BASIC_INFORMATION(Structure):
+    _fields_ = [
+        ("ExitStatus",DWORD),
+        ("PebBaseAddress",PVOID),
+        ("AffinityMask",PVOID),
+        ("BasePriority",PVOID),
+        ("UniqueProcessId",PVOID),
+        ("InheritedFromUniqueProcessId",PVOID),
+    ]
 
 # When the dwDebugEventCode is evaluated
 class EXCEPTION_RECORD(Structure):
